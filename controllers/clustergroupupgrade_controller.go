@@ -101,6 +101,14 @@ func requeueWithError(err error) (ctrl.Result, error) {
 	return ctrl.Result{}, err
 }
 
+func (r *ClusterGroupUpgradeReconciler) sendEvent(cgu *ranv1alpha1.ClusterGroupUpgrade, reason utils.CGUEventReasonType, annotations map[string]string) {
+	if annotations == nil {
+		r.Recorder.Event(cgu, corev1.EventTypeNormal, string(reason), utils.CGUEventReasonMsg[reason])
+	} else {
+		r.Recorder.AnnotatedEventf(cgu, annotations, corev1.EventTypeNormal, string(reason), utils.CGUEventReasonMsg[reason])
+	}
+}
+
 //+kubebuilder:rbac:groups=ran.openshift.io,resources=clustergroupupgrades,verbs=get;list;watch;create;update;patch;delete
 //+kubebuilder:rbac:groups=ran.openshift.io,resources=clustergroupupgrades/status,verbs=get;update;patch
 //+kubebuilder:rbac:groups=ran.openshift.io,resources=clustergroupupgrades/finalizers,verbs=update
@@ -181,7 +189,7 @@ func (r *ClusterGroupUpgradeReconciler) Reconcile(ctx context.Context, req ctrl.
 			}
 
 			if suceededCondition.Status == metav1.ConditionTrue {
-				r.Recorder.Event(clusterGroupUpgrade, corev1.EventTypeNormal, suceededCondition.Reason, suceededCondition.Message)
+				r.sendEvent(clusterGroupUpgrade, utils.CGUEventReasonUpgradeSuccess, nil)
 			} else {
 				r.Recorder.Event(clusterGroupUpgrade, corev1.EventTypeWarning, suceededCondition.Reason, suceededCondition.Message)
 			}
@@ -370,10 +378,14 @@ func (r *ClusterGroupUpgradeReconciler) Reconcile(ctx context.Context, req ctrl.
 				metav1.ConditionFalse,
 				"Not enabled",
 			)
+
+			r.sendEvent(clusterGroupUpgrade, utils.CGUEventReasonUpgradeDisabled, nil)
 			nextReconcile = requeueWithLongInterval()
 			r.updateStatus(ctx, clusterGroupUpgrade)
 			return
 		}
+
+		r.sendEvent(clusterGroupUpgrade, utils.CGUEventReasonUpgradeEnabled, nil)
 
 		if clusterGroupUpgrade.Status.Status.StartedAt.IsZero() {
 			clusterGroupUpgrade.Status.Status.StartedAt = metav1.Now()
@@ -803,6 +815,10 @@ func (r *ClusterGroupUpgradeReconciler) updateCurrentBatchProgress(
 		}
 	}
 
+	if isBatchComplete {
+		r.sendEvent(clusterGroupUpgrade, utils.CGUEventReasonBatchUpgradeSuccess, nil)
+	}
+
 	r.Log.Info("[updateCurrentBatchProgress]", "plan", clusterGroupUpgrade.Status.Status.CurrentBatchRemediationProgress, "isBatchComplete", isBatchComplete)
 	return isBatchComplete, isSoaking, isProgressing, nil
 }
@@ -848,6 +864,7 @@ func (r *ClusterGroupUpgradeReconciler) updateClusterProgress(
 		clusterGroupUpgrade.Status.Status.CurrentBatchRemediationProgress[clusterName].PolicyIndex = nil
 		clusterGroupUpgrade.Status.Status.CurrentBatchRemediationProgress[clusterName].ManifestWorkIndex = nil
 		*clusterProgressState = ranv1alpha1.Completed
+		r.sendEvent(clusterGroupUpgrade, utils.CGUEventReasonClusterUpgradeSuccess, nil)
 		err := r.takeActionsAfterCompletion(ctx, clusterGroupUpgrade, clusterName)
 		if err != nil {
 			return false, false, false, err
