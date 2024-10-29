@@ -371,6 +371,12 @@ func (r *ClusterGroupUpgradeReconciler) Reconcile(ctx context.Context, req ctrl.
 		}
 
 		if !*clusterGroupUpgrade.Spec.Enable {
+			cond := meta.FindStatusCondition(clusterGroupUpgrade.Status.Conditions, string(utils.ConditionTypes.Progressing))
+			if cond == nil || cond.Reason != string(utils.ConditionReasons.NotEnabled) || cond.Status != metav1.ConditionFalse {
+				r.Log.Info("Sending k8s event", "event", utils.CGUEventReasonUpgradeDisabled, "err", err)
+				r.sendEvent(clusterGroupUpgrade, utils.CGUEventReasonUpgradeDisabled, nil)
+			}
+
 			utils.SetStatusCondition(
 				&clusterGroupUpgrade.Status.Conditions,
 				utils.ConditionTypes.Progressing,
@@ -379,7 +385,6 @@ func (r *ClusterGroupUpgradeReconciler) Reconcile(ctx context.Context, req ctrl.
 				"Not enabled",
 			)
 
-			r.sendEvent(clusterGroupUpgrade, utils.CGUEventReasonUpgradeDisabled, nil)
 			nextReconcile = requeueWithLongInterval()
 			r.updateStatus(ctx, clusterGroupUpgrade)
 			return
@@ -1342,9 +1347,30 @@ func (r *ClusterGroupUpgradeReconciler) managedClusterResourceMapper(ctx context
 func (r *ClusterGroupUpgradeReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	r.Recorder = mgr.GetEventRecorderFor("ClusterGroupUpgrade")
 
+	evLogger := func(object string, ev interface{}) {
+		switch e := ev.(type) {
+		case event.CreateEvent:
+			r.Log.Info("RECONCILER EVENT", "type", "create", "object", object, "namespace", e.Object.GetNamespace(), "name", e.Object.GetName())
+		case event.UpdateEvent:
+			r.Log.Info("RECONCILER EVENT", "type", "update", "object", object, "namespace", e.ObjectNew.GetNamespace(), "name", e.ObjectNew.GetName())
+		case event.DeleteEvent:
+			r.Log.Info("RECONCILER EVENT", "type", "delete", "object", object, "namespace", e.Object.GetNamespace(), "name", e.Object.GetName())
+		case event.GenericEvent:
+			var genericEv string
+			b, err := json.Marshal(e)
+			if err != nil {
+				genericEv = fmt.Sprintf("failed to marshal event: %v", err)
+			} else {
+				genericEv = string(b)
+			}
+			r.Log.Info("RECONCILER EVENT", "type", "generic", "object", object, "namespace", e.Object.GetNamespace(), "name", e.Object.GetName(), "event", genericEv)
+		}
+	}
+
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&ranv1alpha1.ClusterGroupUpgrade{}, builder.WithPredicates(predicate.Funcs{
 			UpdateFunc: func(e event.UpdateEvent) bool {
+				evLogger("ClusterGroupUpgrade", e)
 				// Generation is only updated on spec changes (also on deletion),
 				// not metadata or status
 				oldGeneration := e.ObjectOld.GetGeneration()
@@ -1352,15 +1378,25 @@ func (r *ClusterGroupUpgradeReconciler) SetupWithManager(mgr ctrl.Manager) error
 				// spec update only for CGU
 				return oldGeneration != newGeneration
 			},
-			CreateFunc:  func(ce event.CreateEvent) bool { return true },
-			GenericFunc: func(ge event.GenericEvent) bool { return false },
-			DeleteFunc:  func(de event.DeleteEvent) bool { return false },
+			CreateFunc: func(ev event.CreateEvent) bool {
+				evLogger("ClusterGroupUpgrade", ev)
+				return true
+			},
+			GenericFunc: func(ev event.GenericEvent) bool {
+				evLogger("ClusterGroupUpgrade", ev)
+				return false
+			},
+			DeleteFunc: func(ev event.DeleteEvent) bool {
+				evLogger("ClusterGroupUpgrade", ev)
+				return false
+			},
 		})).
 		Watches(
 			&mwv1.ManifestWork{},
 			handler.EnqueueRequestsFromMapFunc(r.managedClusterResourceMapper),
 			builder.WithPredicates(predicate.Funcs{
 				UpdateFunc: func(e event.UpdateEvent) bool {
+					evLogger("ManifestWork", e)
 					// Generation is only updated on spec changes (also on deletion),
 					// not metadata or status
 					oldGeneration := e.ObjectOld.GetGeneration()
@@ -1368,15 +1404,25 @@ func (r *ClusterGroupUpgradeReconciler) SetupWithManager(mgr ctrl.Manager) error
 					// status update only for manifestwork
 					return oldGeneration == newGeneration
 				},
-				CreateFunc:  func(ce event.CreateEvent) bool { return false },
-				GenericFunc: func(ge event.GenericEvent) bool { return false },
-				DeleteFunc:  func(de event.DeleteEvent) bool { return true },
+				CreateFunc: func(ev event.CreateEvent) bool {
+					evLogger("ManifestWork", ev)
+					return false
+				},
+				GenericFunc: func(ev event.GenericEvent) bool {
+					evLogger("ManifestWork", ev)
+					return false
+				},
+				DeleteFunc: func(ev event.DeleteEvent) bool {
+					evLogger("ManifestWork", ev)
+					return true
+				},
 			})).
 		Watches(
 			&policiesv1.Policy{},
 			handler.Funcs{UpdateFunc: r.rootPolicyHandlerOnUpdate},
 			builder.WithPredicates(predicate.Funcs{
 				UpdateFunc: func(e event.UpdateEvent) bool {
+					evLogger("Policy", e)
 					// Filter out updates to child policies
 					if _, ok := e.ObjectNew.GetLabels()[utils.ChildPolicyLabel]; ok {
 						return false
@@ -1385,20 +1431,39 @@ func (r *ClusterGroupUpgradeReconciler) SetupWithManager(mgr ctrl.Manager) error
 					// Process pure status updates to root policies
 					return e.ObjectOld.GetGeneration() == e.ObjectNew.GetGeneration()
 				},
-				CreateFunc:  func(ce event.CreateEvent) bool { return false },
-				GenericFunc: func(ge event.GenericEvent) bool { return false },
-				DeleteFunc:  func(de event.DeleteEvent) bool { return false },
+				CreateFunc: func(ev event.CreateEvent) bool {
+					evLogger("Policy", ev)
+					return false
+				},
+				GenericFunc: func(ev event.GenericEvent) bool {
+					evLogger("Policy", ev)
+					return false
+				},
+				DeleteFunc: func(ev event.DeleteEvent) bool {
+					evLogger("Policy", ev)
+					return false
+				},
 			})).
 		Watches(
 			&viewv1beta1.ManagedClusterView{},
 			handler.EnqueueRequestsFromMapFunc(r.managedClusterResourceMapper),
 			builder.WithPredicates(predicate.Funcs{
 				UpdateFunc: func(e event.UpdateEvent) bool {
+					evLogger("ManagedClusterView", e)
 					return e.ObjectOld.GetGeneration() == e.ObjectNew.GetGeneration()
 				},
-				CreateFunc:  func(ce event.CreateEvent) bool { return false },
-				GenericFunc: func(ge event.GenericEvent) bool { return false },
-				DeleteFunc:  func(de event.DeleteEvent) bool { return false },
+				CreateFunc: func(ev event.CreateEvent) bool {
+					evLogger("ManagedClusterView", ev)
+					return false
+				},
+				GenericFunc: func(ev event.GenericEvent) bool {
+					evLogger("ManagedClusterView", ev)
+					return false
+				},
+				DeleteFunc: func(ev event.DeleteEvent) bool {
+					evLogger("ManagedClusterView", ev)
+					return false
+				},
 			})).
 		WithOptions(controller.Options{MaxConcurrentReconciles: r.getCGUControllerWorkerCount()}).
 		Complete(r)
