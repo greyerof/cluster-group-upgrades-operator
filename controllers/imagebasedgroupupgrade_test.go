@@ -3,6 +3,7 @@ package controllers
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"testing"
 
 	"github.com/go-logr/logr"
@@ -366,6 +367,58 @@ func TestSyncStatusWithCGUs(t *testing.T) {
 	}
 }
 
+func TestGetSecretManifest(t *testing.T) {
+	tests := []struct {
+		name         string
+		expectedJson string
+		secret       corev1.Secret
+	}{
+		{
+			name: "simple secret",
+			secret: corev1.Secret{
+				ObjectMeta: v1.ObjectMeta{
+					Name:      "secret",
+					Namespace: "namespace",
+				},
+			},
+			expectedJson: `{"apiVersion":"v1","kind":"Secret","metadata":{"creationTimestamp":null,"name":"secret","namespace":"openshift-lifecycle-agent"}}`,
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			pull := lcav1.PullSecretRef{Name: "secret"}
+			ibgu := &ibguv1alpha1.ImageBasedGroupUpgrade{
+				ObjectMeta: v1.ObjectMeta{
+					Name:      "name",
+					Namespace: "namespace",
+				},
+				Spec: ibguv1alpha1.ImageBasedGroupUpgradeSpec{
+					IBUSpec: lcav1.ImageBasedUpgradeSpec{
+						SeedImageRef: lcav1.SeedImageRef{
+							Version:       "version",
+							Image:         "image",
+							PullSecretRef: &pull,
+						},
+					},
+				},
+			}
+
+			objs := []client.Object{}
+			fakeClient, err := getFakeClientFromObjects(objs...)
+			if err != nil {
+				t.Errorf("error in creating fake client")
+			}
+			err = fakeClient.Create(context.TODO(), &test.secret)
+			if err != nil {
+				panic(err)
+			}
+			reconciler := IBGUReconciler{Client: fakeClient, Scheme: testscheme, Log: logr.Discard()}
+			manifest := reconciler.getSecretManifest(context.TODO(), ibgu)
+			assert.JSONEq(t, test.expectedJson, string(manifest.Raw))
+		})
+	}
+}
+
 func TestGetConfigMapManifests(t *testing.T) {
 	tests := []struct {
 		name         string
@@ -433,6 +486,7 @@ func TestEnsureClusterLabels(t *testing.T) {
 		managedClusters         []clusterv1.ManagedCluster
 		expectedManagedClusters []clusterv1.ManagedCluster
 		clusterStates           []ibguv1alpha1.ClusterState
+		expectedErr             error
 	}{
 		{
 			name: "failed prep, upgrade and abort",
@@ -571,6 +625,83 @@ func TestEnsureClusterLabels(t *testing.T) {
 				},
 			},
 		},
+		{
+			name: "two cluster, first throws an error",
+			managedClusters: []clusterv1.ManagedCluster{
+				{
+					ObjectMeta: v1.ObjectMeta{
+						Name: "cluster2",
+					},
+				},
+			},
+			clusterStates: []ibguv1alpha1.ClusterState{
+				{
+					Name: "cluster1",
+					CompletedActions: []ibguv1alpha1.ActionMessage{
+						{
+							Action: ibguv1alpha1.Prep,
+						},
+					},
+				},
+				{
+					Name: "cluster2",
+					CompletedActions: []ibguv1alpha1.ActionMessage{
+						{
+							Action: ibguv1alpha1.Prep,
+						},
+					},
+				},
+			},
+			expectedManagedClusters: []clusterv1.ManagedCluster{
+				{
+					ObjectMeta: v1.ObjectMeta{
+						Name: "cluster2",
+						Labels: map[string]string{
+							"lcm.openshift.io/ibgu-prep-completed": "",
+						},
+					},
+				},
+			},
+			expectedErr: fmt.Errorf("failed to ensure cluster labels for %v", []string{"cluster-1"}),
+		},
+		{
+			name: "two cluster, first nothing to do",
+			managedClusters: []clusterv1.ManagedCluster{
+				{
+					ObjectMeta: v1.ObjectMeta{
+						Name: "cluster1",
+					},
+				},
+				{
+					ObjectMeta: v1.ObjectMeta{
+						Name: "cluster2",
+					},
+				},
+			},
+			clusterStates: []ibguv1alpha1.ClusterState{
+				{
+					Name: "cluster1",
+				},
+				{
+					Name: "cluster2",
+					CompletedActions: []ibguv1alpha1.ActionMessage{
+						{
+							Action: ibguv1alpha1.Prep,
+						},
+					},
+				},
+			},
+			expectedManagedClusters: []clusterv1.ManagedCluster{
+				{
+					ObjectMeta: v1.ObjectMeta{
+						Name: "cluster2",
+						Labels: map[string]string{
+							"lcm.openshift.io/ibgu-prep-completed": "",
+						},
+					},
+				},
+			},
+		},
 	}
 
 	ibgu := &ibguv1alpha1.ImageBasedGroupUpgrade{
@@ -611,7 +742,11 @@ func TestEnsureClusterLabels(t *testing.T) {
 			}
 			reconciler := IBGUReconciler{Client: fakeClient, Scheme: testscheme, Log: logr.Discard()}
 			err = reconciler.ensureClusterLabels(context.TODO(), ibgu)
-			assert.NoError(t, err)
+			if test.expectedErr == nil {
+				assert.NoError(t, err)
+			} else {
+				assert.Error(t, test.expectedErr)
+			}
 			for _, expected := range test.expectedManagedClusters {
 				got := &clusterv1.ManagedCluster{}
 				err := fakeClient.Get(context.TODO(), types.NamespacedName{Namespace: expected.Namespace, Name: expected.Name}, got)

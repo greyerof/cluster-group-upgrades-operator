@@ -59,10 +59,13 @@ type IBGUReconciler struct {
 	Recorder record.EventRecorder
 }
 
+const LcaAnnotationSuffix = "lca.openshift.io"
+
 //+kubebuilder:rbac:groups=lcm.openshift.io,resources=imagebasedgroupupgrades,verbs=get;list;watch;create;update;patch;delete
 //+kubebuilder:rbac:groups=lcm.openshift.io,resources=imagebasedgroupupgrades/status,verbs=get;update;patch
 //+kubebuilder:rbac:groups=lcm.openshift.io,resources=imagebasedgroupupgrades/finalizers,verbs=update
 //+kubebuilder:rbac:groups="",resources=configmaps,verbs=get;list;watch;create;update;patch;delete
+//+kubebuilder:rbac:groups="",resources=secrets,verbs=get;list;watch
 //+kubebuilder:rbac:groups=cluster.open-cluster-management.io,resources=managedclusters,verbs=get;list;watch;update;patch
 //+kubebuilder:rbac:groups=work.open-cluster-management.io,resources=manifestworkreplicasets,verbs=create;get;list;watch;delete
 //+kubebuilder:rbac:groups="",resources=events,verbs=create;patch
@@ -94,6 +97,12 @@ func (r *IBGUReconciler) Reconcile(ctx context.Context, req ctrl.Request) (nextR
 		r.Log.Error(err, "Failed to get IBGU")
 		return requeueWithError(err)
 	}
+	err = r.ensureClusterLabels(ctx, ibgu)
+	if err != nil {
+		r.Log.Error(err, "error ensuring cluster labels")
+		return requeueWithError(err)
+	}
+
 	err = r.ensureManifests(ctx, ibgu)
 	if err != nil {
 		r.Log.Error(err, "error ensure manifests")
@@ -122,6 +131,7 @@ func (r *IBGUReconciler) Reconcile(ctx context.Context, req ctrl.Request) (nextR
 }
 
 func (r *IBGUReconciler) ensureClusterLabels(ctx context.Context, ibgu *ibguv1alpha1.ImageBasedGroupUpgrade) error {
+	failedClusters := []string{}
 	for _, clusterState := range ibgu.Status.Clusters {
 		labelsToAdd := make(map[string]string)
 		for _, action := range clusterState.FailedActions {
@@ -137,37 +147,52 @@ func (r *IBGUReconciler) ensureClusterLabels(ctx context.Context, ibgu *ibguv1al
 			labelsToAdd[fmt.Sprintf(utils.IBGUActionCompletedLabelTemplate, strings.ToLower(action.Action))] = ""
 		}
 		if !removeLabels && len(labelsToAdd) == 0 {
-			return nil
+			continue
 		}
 		cluster := &clusterv1.ManagedCluster{}
 		if err := r.Get(ctx, types.NamespacedName{Name: clusterState.Name}, cluster); err != nil {
-			return fmt.Errorf("failed to get managed cluster: %w", err)
+			r.Log.Error(err, "failed to get managed cluster")
+			failedClusters = append(failedClusters, clusterState.Name)
+			continue
 		}
 		currentLabels := cluster.GetLabels()
 		if currentLabels == nil {
 			currentLabels = make(map[string]string)
 		}
 
+		needToUpdate := false
 		if removeLabels {
 			pattern := `lcm\.openshift\.io/ibgu-[a-zA-Z]+-(completed|failed)`
 			re := regexp.MustCompile(pattern)
 			for key := range currentLabels {
 				if re.MatchString(key) {
+					needToUpdate = true
 					delete(currentLabels, key)
 				}
 			}
 		} else {
 			for key, value := range labelsToAdd {
+				if _, exist := currentLabels[key]; exist {
+					continue
+				}
 				currentLabels[key] = value
+				needToUpdate = true
 			}
 		}
 
-		cluster.SetLabels(currentLabels)
-		if err := r.Update(ctx, cluster); err != nil {
-			return fmt.Errorf("failed to update labels for cluster: %s, err: %w", cluster.Name, err)
+		if needToUpdate {
+			cluster.SetLabels(currentLabels)
+			if err := r.Update(ctx, cluster); err != nil {
+				r.Log.Error(err, "failed to update labels for cluster")
+				failedClusters = append(failedClusters, cluster.Name)
+				continue
+			}
 		}
 	}
-	return nil
+	if len(failedClusters) == 0 {
+		return nil
+	}
+	return fmt.Errorf("failed to ensure cluster labels for %v", failedClusters)
 }
 
 func (r *IBGUReconciler) syncStatusWithCGUs(ctx context.Context, ibgu *ibguv1alpha1.ImageBasedGroupUpgrade) error {
@@ -235,6 +260,22 @@ func getCGUNameForPlanItem(ibgu *ibguv1alpha1.ImageBasedGroupUpgrade, planItem *
 	return fmt.Sprintf("%s-%s-%d", ibgu.GetName(), actions, planItemIndex)
 }
 
+func createIBU(ibgu *ibguv1alpha1.ImageBasedGroupUpgrade) *lcav1.ImageBasedUpgrade {
+	ibu := &lcav1.ImageBasedUpgrade{
+		ObjectMeta: v1.ObjectMeta{
+			Name:        "upgrade",
+			Annotations: make(map[string]string),
+		},
+		Spec: ibgu.Spec.IBUSpec,
+	}
+	for n, v := range ibgu.ObjectMeta.Annotations {
+		if strings.Contains(n, LcaAnnotationSuffix) {
+			ibu.ObjectMeta.Annotations[n] = v
+		}
+	}
+	return ibu
+}
+
 func (r *IBGUReconciler) ensureCGUForPlanItem(
 	ctx context.Context,
 	ibgu *ibguv1alpha1.ImageBasedGroupUpgrade,
@@ -253,12 +294,7 @@ func (r *IBGUReconciler) ensureCGUForPlanItem(
 
 	manifestWorkReplicaSets := []*mwv1alpha1.ManifestWorkReplicaSet{}
 	manifestWorkReplicaSetsNames := []string{}
-	ibu := &lcav1.ImageBasedUpgrade{
-		ObjectMeta: v1.ObjectMeta{
-			Name: "upgrade",
-		},
-		Spec: ibgu.Spec.IBUSpec,
-	}
+	ibu := createIBU(ibgu)
 	disableAutoImport := false
 	for _, action := range planItem.Actions {
 		templateName := ""
@@ -268,6 +304,10 @@ func (r *IBGUReconciler) ensureCGUForPlanItem(
 		case ibguv1alpha1.Prep:
 			templateName = strings.ToLower(fmt.Sprintf("%s-%s", ibgu.Name, ibguv1alpha1.Prep))
 			manifests := r.getConfigMapManifests(ctx, ibgu)
+			secretManifest := r.getSecretManifest(ctx, ibgu)
+			if secretManifest != nil {
+				manifests = append(manifests, *secretManifest)
+			}
 			mwrs, err = utils.GeneratePrepManifestWorkReplicaset(templateName, ibgu.GetNamespace(), ibu, manifests)
 		case ibguv1alpha1.Upgrade:
 			templateName = strings.ToLower(fmt.Sprintf("%s-%s", ibgu.Name, ibguv1alpha1.Upgrade))
@@ -298,6 +338,8 @@ func (r *IBGUReconciler) ensureCGUForPlanItem(
 	for _, mwrs := range manifestWorkReplicaSets {
 		foundMWRS := &mwv1alpha1.ManifestWorkReplicaSet{}
 		err := r.Get(ctx, types.NamespacedName{Name: mwrs.Name, Namespace: mwrs.Namespace}, foundMWRS)
+
+		// nolint: gocritic
 		if err != nil && errors.IsNotFound(err) {
 			r.Log.Info("Creating ManifestWorkReplicaSet", "ManifestWorkReplicaSet", mwrs.Name)
 			ctrl.SetControllerReference(ibgu, mwrs, r.Scheme)
@@ -363,6 +405,35 @@ func (r *IBGUReconciler) ensureManifests(ctx context.Context, ibgu *ibguv1alpha1
 		"All plan steps are completed")
 
 	return nil
+}
+
+func (r *IBGUReconciler) getSecretManifest(
+	ctx context.Context, ibgu *ibguv1alpha1.ImageBasedGroupUpgrade,
+) *mwv1.Manifest {
+	if ibgu.Spec.IBUSpec.SeedImageRef.PullSecretRef == nil {
+		r.Log.Info("No PullSecretRef in IBGU. Skip adding secret to IBGU manifests")
+		return nil
+	}
+	secret := &corev1.Secret{}
+	if err := r.Get(ctx, types.NamespacedName{
+		Name:      ibgu.Spec.IBUSpec.SeedImageRef.PullSecretRef.Name,
+		Namespace: ibgu.GetNamespace(),
+	}, secret); err != nil {
+		r.Log.Info("[WARN] pullsecret does not exist on hub. Skip adding it to manifests, secret name ",
+			ibgu.Spec.IBUSpec.SeedImageRef.PullSecretRef.Name, " namespace ", ibgu.GetNamespace())
+		return nil
+	}
+	secret.ResourceVersion = ""
+	secret.ObjectMeta.ManagedFields = []metav1.ManagedFieldsEntry{}
+	secret.CreationTimestamp = metav1.Time{}
+	secret.UID = ""
+	secret.Namespace = "openshift-lifecycle-agent"
+	secretBytes, err := utils.ObjectToByteArray(secret)
+	if err != nil {
+		r.Log.Info("[WARN] failed to convert secret to []bytes")
+		return nil
+	}
+	return &mwv1.Manifest{RawExtension: runtime.RawExtension{Raw: secretBytes}}
 }
 
 func (r *IBGUReconciler) getConfigMapManifests(ctx context.Context, ibgu *ibguv1alpha1.ImageBasedGroupUpgrade) []mwv1.Manifest {

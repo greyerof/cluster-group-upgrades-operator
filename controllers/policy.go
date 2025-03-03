@@ -684,6 +684,7 @@ func (r *ClusterGroupUpgradeReconciler) getClusterComplianceWithPolicy(
 	for _, crtSubStatusCrt := range subStatus {
 		crtSubStatusMap := crtSubStatusCrt.(map[string]interface{})
 		// If the cluster is Compliant, return true.
+		// nolint: gocritic
 		if clusterName == crtSubStatusMap["clustername"].(string) {
 			if crtSubStatusMap["compliant"] == utils.ClusterStatusCompliant {
 				return utils.ClusterStatusCompliant
@@ -807,7 +808,7 @@ func (r *ClusterGroupUpgradeReconciler) updateChildResourceNamesInStatus(ctx con
 	return nil
 }
 
-func (r *ClusterGroupUpgradeReconciler) rootPolicyHandlerOnUpdate(ctx context.Context, e event.UpdateEvent, q workqueue.RateLimitingInterface) {
+func (r *ClusterGroupUpgradeReconciler) rootPolicyHandlerOnUpdate(ctx context.Context, e event.UpdateEvent, q workqueue.TypedRateLimitingInterface[reconcile.Request]) {
 	oldPolicy := e.ObjectOld.(*policiesv1.Policy)
 	newPolicy := e.ObjectNew.(*policiesv1.Policy)
 
