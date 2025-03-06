@@ -27,7 +27,6 @@ import (
 	"time"
 
 	"github.com/go-logr/logr"
-	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -101,14 +100,6 @@ func requeueWithError(err error) (ctrl.Result, error) {
 	return ctrl.Result{}, err
 }
 
-func (r *ClusterGroupUpgradeReconciler) sendEvent(cgu *ranv1alpha1.ClusterGroupUpgrade, reason utils.CGUEventReasonType, annotations map[string]string) {
-	if annotations == nil {
-		r.Recorder.Event(cgu, corev1.EventTypeNormal, string(reason), utils.CGUEventReasonMsg[reason])
-	} else {
-		r.Recorder.AnnotatedEventf(cgu, annotations, corev1.EventTypeNormal, string(reason), utils.CGUEventReasonMsg[reason])
-	}
-}
-
 //+kubebuilder:rbac:groups=ran.openshift.io,resources=clustergroupupgrades,verbs=get;list;watch;create;update;patch;delete
 //+kubebuilder:rbac:groups=ran.openshift.io,resources=clustergroupupgrades/status,verbs=get;update;patch
 //+kubebuilder:rbac:groups=ran.openshift.io,resources=clustergroupupgrades/finalizers,verbs=update
@@ -170,6 +161,7 @@ func (r *ClusterGroupUpgradeReconciler) Reconcile(ctx context.Context, req ctrl.
 		return
 	}
 	if reconcileTime == utils.ReconcileNow {
+		r.sendEventCGUCreated(clusterGroupUpgrade)
 		nextReconcile = requeueImmediately()
 		return
 	} else if reconcileTime == utils.StopReconciling {
@@ -190,9 +182,9 @@ func (r *ClusterGroupUpgradeReconciler) Reconcile(ctx context.Context, req ctrl.
 			}
 
 			if suceededCondition.Status == metav1.ConditionTrue {
-				r.sendEvent(clusterGroupUpgrade, utils.CGUEventReasonUpgradeSuccess, nil)
+				r.sendEventCGUSuccess(clusterGroupUpgrade)
 			} else {
-				r.Recorder.Event(clusterGroupUpgrade, corev1.EventTypeWarning, suceededCondition.Reason, suceededCondition.Message)
+				r.sendEventCGUTimedout(clusterGroupUpgrade)
 			}
 			// Set completion time only after post actions are executed with no errors
 			clusterGroupUpgrade.Status.Status.CompletedAt = metav1.Now()
@@ -205,15 +197,21 @@ func (r *ClusterGroupUpgradeReconciler) Reconcile(ctx context.Context, req ctrl.
 		var allManagedPoliciesExist, allManifestWorkTemplatesExist bool
 		var managedPoliciesInfo policiesInfo
 		var clusters, missingTemplates []string
+		var missingClusters []string
 		var reconcile bool
-		clusters, reconcile, err = r.validateCR(ctx, clusterGroupUpgrade)
+		clusters, missingClusters, reconcile, err = r.validateCR(ctx, clusterGroupUpgrade)
 		if err != nil {
+			condMsg := fmt.Sprintf("Unable to select clusters: %s", err)
+			cond := meta.FindStatusCondition(clusterGroupUpgrade.Status.Conditions, string(utils.ConditionTypes.ClustersSelected))
+			if cond == nil || cond.Message != condMsg {
+				r.sendEventCGUValidationFailureMissingCluster(clusterGroupUpgrade, missingClusters)
+			}
 			utils.SetStatusCondition(
 				&clusterGroupUpgrade.Status.Conditions,
 				utils.ConditionTypes.ClustersSelected,
 				utils.ConditionReasons.ClusterNotFound,
 				metav1.ConditionFalse,
-				fmt.Sprintf("Unable to select clusters: %s", err),
+				condMsg,
 			)
 			nextReconcile = requeueWithLongInterval()
 			err = r.updateStatus(ctx, clusterGroupUpgrade)
@@ -287,14 +285,17 @@ func (r *ClusterGroupUpgradeReconciler) Reconcile(ctx context.Context, req ctrl.
 			var statusMessage string
 			var conditionReason utils.ConditionReason
 
+			validationFailureType := CGUValidationErrorMsgNone
 			if clusterGroupUpgrade.RolloutType() == ranv1alpha1.RolloutTypes.Policy {
 				conditionReason = utils.ConditionReasons.NotAllManagedPoliciesExist
 				if len(managedPoliciesInfo.missingPolicies) != 0 {
 					statusMessage = fmt.Sprintf("Missing managed policies: %s ", managedPoliciesInfo.missingPolicies)
+					validationFailureType = CGUValidationErrorMsgMissingPolicies
 				}
 
 				if len(managedPoliciesInfo.invalidPolicies) != 0 {
 					statusMessage = fmt.Sprintf("Invalid managed policies: %s ", managedPoliciesInfo.invalidPolicies)
+					validationFailureType = CGUValidationErrorMsgInvalidPolicies
 				}
 
 				if len(managedPoliciesInfo.duplicatedPoliciesNs) != 0 {
@@ -302,11 +303,19 @@ func (r *ClusterGroupUpgradeReconciler) Reconcile(ctx context.Context, req ctrl.
 					statusMessage = fmt.Sprintf(
 						"Managed policy name should be unique, but was found in multiple namespaces: %s ", jsonData)
 					conditionReason = utils.ConditionReasons.AmbiguousManagedPoliciesNames
+					validationFailureType = CGUValidationErrorMsgAmbiguousPolicies
 				}
 			} else {
 				conditionReason = utils.ConditionReasons.NotAllManifestTemplatesExist
 				statusMessage = fmt.Sprintf("Missing manifest templates: %s", missingTemplates)
 			}
+
+			// Send the validation failure event only if this validation error is new.
+			cond := meta.FindStatusCondition(clusterGroupUpgrade.Status.Conditions, string(utils.ConditionTypes.Validated))
+			if cond == nil || cond.Message != statusMessage {
+				r.sendEventCGUVPoliciesValidationFailure(clusterGroupUpgrade, validationFailureType, managedPoliciesInfo)
+			}
+
 			// If there are errors regarding the managedPolicies, update the Status accordingly.
 			utils.SetStatusCondition(
 				&clusterGroupUpgrade.Status.Conditions,
@@ -372,12 +381,6 @@ func (r *ClusterGroupUpgradeReconciler) Reconcile(ctx context.Context, req ctrl.
 		}
 
 		if !*clusterGroupUpgrade.Spec.Enable {
-			cond := meta.FindStatusCondition(clusterGroupUpgrade.Status.Conditions, string(utils.ConditionTypes.Progressing))
-			if cond == nil || cond.Reason != string(utils.ConditionReasons.NotEnabled) || cond.Status != metav1.ConditionFalse {
-				r.Log.Info("Sending k8s event", "event", utils.CGUEventReasonUpgradeDisabled, "err", err)
-				r.sendEvent(clusterGroupUpgrade, utils.CGUEventReasonUpgradeDisabled, nil)
-			}
-
 			utils.SetStatusCondition(
 				&clusterGroupUpgrade.Status.Conditions,
 				utils.ConditionTypes.Progressing,
@@ -385,13 +388,10 @@ func (r *ClusterGroupUpgradeReconciler) Reconcile(ctx context.Context, req ctrl.
 				metav1.ConditionFalse,
 				"Not enabled",
 			)
-
 			nextReconcile = requeueWithLongInterval()
 			r.updateStatus(ctx, clusterGroupUpgrade)
 			return
 		}
-
-		r.sendEvent(clusterGroupUpgrade, utils.CGUEventReasonUpgradeEnabled, nil)
 
 		if clusterGroupUpgrade.Status.Status.StartedAt.IsZero() {
 			clusterGroupUpgrade.Status.Status.StartedAt = metav1.Now()
@@ -569,6 +569,8 @@ func (r *ClusterGroupUpgradeReconciler) Reconcile(ctx context.Context, req ctrl.
 			}
 			// Set the time for when the batch started updating.
 			clusterGroupUpgrade.Status.Status.CurrentBatchStartedAt = metav1.Now()
+
+			r.sendEventCGUBatchUpgradeStarted(clusterGroupUpgrade)
 		}
 
 		// Check whether we have time left on the cgu timeout
@@ -636,6 +638,8 @@ func (r *ClusterGroupUpgradeReconciler) Reconcile(ctx context.Context, req ctrl.
 					r.Log.Info("[Reconcile] Calculating batch timeout (minutes)", "currentBatchTimeout", fmt.Sprintf("%f", currentBatchTimeout.Minutes()))
 
 					if time.Since(clusterGroupUpgrade.Status.Status.CurrentBatchStartedAt.Time) > currentBatchTimeout {
+						r.sendEventCGUBatchUpgradeTimedout(clusterGroupUpgrade)
+
 						// We want to immediately continue to the next reconcile regardless of the timeout action
 						nextReconcile = requeueImmediately()
 
@@ -824,7 +828,7 @@ func (r *ClusterGroupUpgradeReconciler) updateCurrentBatchProgress(
 	}
 
 	if isBatchComplete {
-		r.sendEvent(clusterGroupUpgrade, utils.CGUEventReasonBatchUpgradeSuccess, nil)
+		r.sendEventCGUBatchUpgradeSuccess(clusterGroupUpgrade)
 	}
 
 	r.Log.Info("[updateCurrentBatchProgress]", "plan", clusterGroupUpgrade.Status.Status.CurrentBatchRemediationProgress, "isBatchComplete", isBatchComplete)
@@ -872,7 +876,9 @@ func (r *ClusterGroupUpgradeReconciler) updateClusterProgress(
 		clusterGroupUpgrade.Status.Status.CurrentBatchRemediationProgress[clusterName].PolicyIndex = nil
 		clusterGroupUpgrade.Status.Status.CurrentBatchRemediationProgress[clusterName].ManifestWorkIndex = nil
 		*clusterProgressState = ranv1alpha1.Completed
-		r.sendEvent(clusterGroupUpgrade, utils.CGUEventReasonClusterUpgradeSuccess, nil)
+
+		r.sendEventCGUClusterUpgradeSuccess(clusterGroupUpgrade, clusterName)
+
 		err := r.takeActionsAfterCompletion(ctx, clusterGroupUpgrade, clusterName)
 		if err != nil {
 			return false, false, false, err
@@ -1222,20 +1228,25 @@ func (r *ClusterGroupUpgradeReconciler) blockingCRsNotCompleted(ctx context.Cont
 	return blockingCRsNotCompleted, blockingCRsMissing, nil
 }
 
-func (r *ClusterGroupUpgradeReconciler) validateCR(ctx context.Context, clusterGroupUpgrade *ranv1alpha1.ClusterGroupUpgrade) ([]string, bool, error) {
+func (r *ClusterGroupUpgradeReconciler) validateCR(ctx context.Context, clusterGroupUpgrade *ranv1alpha1.ClusterGroupUpgrade) ([]string, []string, bool, error) {
 	reconcile := false
 	// Validate clusters in spec are ManagedCluster objects
 	clusters, err := r.getAllClustersForUpgrade(ctx, clusterGroupUpgrade)
 	if err != nil {
-		return nil, reconcile, fmt.Errorf("cannot obtain all the details about the clusters in the CR: %s", err)
+		return nil, nil, reconcile, fmt.Errorf("cannot obtain all the details about the clusters in the CR: %s", err)
 	}
 
+	allMissingClusters := []string{}
 	for _, cluster := range clusters {
 		managedCluster := &clusterv1.ManagedCluster{}
 		err := r.Client.Get(ctx, types.NamespacedName{Name: cluster}, managedCluster)
 		if err != nil {
-			return nil, reconcile, fmt.Errorf("cluster %s is not a ManagedCluster", cluster)
+			allMissingClusters = append(allMissingClusters, cluster)
 		}
+	}
+
+	if len(allMissingClusters) > 0 {
+		return nil, allMissingClusters, reconcile, fmt.Errorf("cluster %s is not a ManagedCluster", allMissingClusters[0])
 	}
 
 	// Validate the canaries are in the list of clusters.
@@ -1249,7 +1260,7 @@ func (r *ClusterGroupUpgradeReconciler) validateCR(ctx context.Context, clusterG
 				}
 			}
 			if !foundCanary {
-				return nil, reconcile, fmt.Errorf("canary cluster %s is not in the list of clusters", canary)
+				return nil, nil, reconcile, fmt.Errorf("canary cluster %s is not in the list of clusters", canary)
 			}
 		}
 	}
@@ -1268,12 +1279,12 @@ func (r *ClusterGroupUpgradeReconciler) validateCR(ctx context.Context, clusterG
 		err = r.updateStatus(ctx, clusterGroupUpgrade)
 		if err != nil {
 			r.Log.Info("Error updating Cluster Group Upgrade")
-			return nil, reconcile, err
+			return nil, nil, reconcile, err
 		}
 		reconcile = true
 	}
 
-	return clusters, reconcile, nil
+	return clusters, nil, reconcile, nil
 }
 
 func (r *ClusterGroupUpgradeReconciler) handleCguFinalizer(
@@ -1351,30 +1362,9 @@ func (r *ClusterGroupUpgradeReconciler) managedClusterResourceMapper(ctx context
 func (r *ClusterGroupUpgradeReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	r.Recorder = mgr.GetEventRecorderFor("ClusterGroupUpgrade")
 
-	evLogger := func(object string, ev interface{}) {
-		switch e := ev.(type) {
-		case event.CreateEvent:
-			r.Log.Info("RECONCILER EVENT", "type", "create", "object", object, "namespace", e.Object.GetNamespace(), "name", e.Object.GetName())
-		case event.UpdateEvent:
-			r.Log.Info("RECONCILER EVENT", "type", "update", "object", object, "namespace", e.ObjectNew.GetNamespace(), "name", e.ObjectNew.GetName())
-		case event.DeleteEvent:
-			r.Log.Info("RECONCILER EVENT", "type", "delete", "object", object, "namespace", e.Object.GetNamespace(), "name", e.Object.GetName())
-		case event.GenericEvent:
-			var genericEv string
-			b, err := json.Marshal(e)
-			if err != nil {
-				genericEv = fmt.Sprintf("failed to marshal event: %v", err)
-			} else {
-				genericEv = string(b)
-			}
-			r.Log.Info("RECONCILER EVENT", "type", "generic", "object", object, "namespace", e.Object.GetNamespace(), "name", e.Object.GetName(), "event", genericEv)
-		}
-	}
-
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&ranv1alpha1.ClusterGroupUpgrade{}, builder.WithPredicates(predicate.Funcs{
 			UpdateFunc: func(e event.UpdateEvent) bool {
-				evLogger("ClusterGroupUpgrade", e)
 				// Generation is only updated on spec changes (also on deletion),
 				// not metadata or status
 				oldGeneration := e.ObjectOld.GetGeneration()
@@ -1382,25 +1372,15 @@ func (r *ClusterGroupUpgradeReconciler) SetupWithManager(mgr ctrl.Manager) error
 				// spec update only for CGU
 				return oldGeneration != newGeneration
 			},
-			CreateFunc: func(ev event.CreateEvent) bool {
-				evLogger("ClusterGroupUpgrade", ev)
-				return true
-			},
-			GenericFunc: func(ev event.GenericEvent) bool {
-				evLogger("ClusterGroupUpgrade", ev)
-				return false
-			},
-			DeleteFunc: func(ev event.DeleteEvent) bool {
-				evLogger("ClusterGroupUpgrade", ev)
-				return false
-			},
+			CreateFunc:  func(ce event.CreateEvent) bool { return true },
+			GenericFunc: func(ge event.GenericEvent) bool { return false },
+			DeleteFunc:  func(de event.DeleteEvent) bool { return false },
 		})).
 		Watches(
 			&mwv1.ManifestWork{},
 			handler.EnqueueRequestsFromMapFunc(r.managedClusterResourceMapper),
 			builder.WithPredicates(predicate.Funcs{
 				UpdateFunc: func(e event.UpdateEvent) bool {
-					evLogger("ManifestWork", e)
 					// Generation is only updated on spec changes (also on deletion),
 					// not metadata or status
 					oldGeneration := e.ObjectOld.GetGeneration()
@@ -1408,25 +1388,15 @@ func (r *ClusterGroupUpgradeReconciler) SetupWithManager(mgr ctrl.Manager) error
 					// status update only for manifestwork
 					return oldGeneration == newGeneration
 				},
-				CreateFunc: func(ev event.CreateEvent) bool {
-					evLogger("ManifestWork", ev)
-					return false
-				},
-				GenericFunc: func(ev event.GenericEvent) bool {
-					evLogger("ManifestWork", ev)
-					return false
-				},
-				DeleteFunc: func(ev event.DeleteEvent) bool {
-					evLogger("ManifestWork", ev)
-					return true
-				},
+				CreateFunc:  func(ce event.CreateEvent) bool { return false },
+				GenericFunc: func(ge event.GenericEvent) bool { return false },
+				DeleteFunc:  func(de event.DeleteEvent) bool { return true },
 			})).
 		Watches(
 			&policiesv1.Policy{},
 			handler.Funcs{UpdateFunc: r.rootPolicyHandlerOnUpdate},
 			builder.WithPredicates(predicate.Funcs{
 				UpdateFunc: func(e event.UpdateEvent) bool {
-					evLogger("Policy", e)
 					// Filter out updates to child policies
 					if _, ok := e.ObjectNew.GetLabels()[utils.ChildPolicyLabel]; ok {
 						return false
@@ -1435,39 +1405,20 @@ func (r *ClusterGroupUpgradeReconciler) SetupWithManager(mgr ctrl.Manager) error
 					// Process pure status updates to root policies
 					return e.ObjectOld.GetGeneration() == e.ObjectNew.GetGeneration()
 				},
-				CreateFunc: func(ev event.CreateEvent) bool {
-					evLogger("Policy", ev)
-					return false
-				},
-				GenericFunc: func(ev event.GenericEvent) bool {
-					evLogger("Policy", ev)
-					return false
-				},
-				DeleteFunc: func(ev event.DeleteEvent) bool {
-					evLogger("Policy", ev)
-					return false
-				},
+				CreateFunc:  func(ce event.CreateEvent) bool { return false },
+				GenericFunc: func(ge event.GenericEvent) bool { return false },
+				DeleteFunc:  func(de event.DeleteEvent) bool { return false },
 			})).
 		Watches(
 			&viewv1beta1.ManagedClusterView{},
 			handler.EnqueueRequestsFromMapFunc(r.managedClusterResourceMapper),
 			builder.WithPredicates(predicate.Funcs{
 				UpdateFunc: func(e event.UpdateEvent) bool {
-					evLogger("ManagedClusterView", e)
 					return e.ObjectOld.GetGeneration() == e.ObjectNew.GetGeneration()
 				},
-				CreateFunc: func(ev event.CreateEvent) bool {
-					evLogger("ManagedClusterView", ev)
-					return false
-				},
-				GenericFunc: func(ev event.GenericEvent) bool {
-					evLogger("ManagedClusterView", ev)
-					return false
-				},
-				DeleteFunc: func(ev event.DeleteEvent) bool {
-					evLogger("ManagedClusterView", ev)
-					return false
-				},
+				CreateFunc:  func(ce event.CreateEvent) bool { return false },
+				GenericFunc: func(ge event.GenericEvent) bool { return false },
+				DeleteFunc:  func(de event.DeleteEvent) bool { return false },
 			})).
 		WithOptions(controller.Options{MaxConcurrentReconciles: r.getCGUControllerWorkerCount()}).
 		Complete(r)

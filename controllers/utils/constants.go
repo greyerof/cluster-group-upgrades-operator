@@ -182,39 +182,3 @@ const (
 	IBGUActionCompletedLabelTemplate = "lcm.openshift.io/ibgu-%s-completed"
 	IBGUActionFailedLabelTemplate    = "lcm.openshift.io/ibgu-%s-failed"
 )
-
-type CGUEventReasonType string
-
-// CGU Event Reasons
-const (
-	CGUEventReasonUpgradeEnabled  = "cgu-upgrade-enabled"
-	CGUEventReasonUpgradeDisabled = "cgu-upgrade-disabled"
-
-	CGUEventReasonUpgradeSuccess = "cgu-upgrade-success"
-	CGUEventReasonUpgradeTimeout = "cgu-upgrade-timeout"
-
-	CGUEventReasonBatchUpgradeStarted = "cgu-batch-upgrade-started"
-	CGUEventReasonBatchUpgradeSuccess = "cgu-batch-upgrade-success"
-	CGUEventReasonBatchUpgradeTimeout = "cgu-batch-upgrade-timeout"
-
-	CGUEventReasonClusterUpgradeStarted = "cgu-cluster-upgrade-started"
-	CGUEventReasonClusterUpgradeSuccess = "cgu-cluster-upgrade-success"
-	CGUEventReasonClusterUpgradeTimeout = "cgu-cluster-upgrade-timeout"
-)
-
-// CGU Event Messages
-var CGUEventReasonMsg = map[CGUEventReasonType]string{
-	CGUEventReasonUpgradeEnabled:  "ClusterGroupUpgrade has been enabled",
-	CGUEventReasonUpgradeDisabled: "ClusterGroupUpgrade is disabled",
-
-	CGUEventReasonUpgradeSuccess: "ClusterGroupUpgrade succeeded remediating policies",
-	CGUEventReasonUpgradeTimeout: "ClusterGroupUpgrade timed-out remediating policies",
-
-	CGUEventReasonBatchUpgradeStarted: "Batch upgrade started",
-	CGUEventReasonBatchUpgradeSuccess: "Policies successfully remediated in batch clusters",
-	CGUEventReasonBatchUpgradeTimeout: "Timeout remediating policies in batch clusters",
-
-	CGUEventReasonClusterUpgradeStarted: "Cluster upgrade started",
-	CGUEventReasonClusterUpgradeSuccess: "Policies successfully remediated in cluster",
-	CGUEventReasonClusterUpgradeTimeout: "Timeout remediating policies in cluster",
-}
