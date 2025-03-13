@@ -204,7 +204,7 @@ func (r *ClusterGroupUpgradeReconciler) Reconcile(ctx context.Context, req ctrl.
 			condMsg := fmt.Sprintf("Unable to select clusters: %s", err)
 			cond := meta.FindStatusCondition(clusterGroupUpgrade.Status.Conditions, string(utils.ConditionTypes.ClustersSelected))
 			if cond == nil || cond.Message != condMsg {
-				r.sendEventCGUValidationFailureMissingCluster(clusterGroupUpgrade, missingClusters)
+				r.sendEventCGUValidationFailureMissingClusters(clusterGroupUpgrade, missingClusters)
 			}
 			utils.SetStatusCondition(
 				&clusterGroupUpgrade.Status.Conditions,
@@ -862,6 +862,8 @@ func (r *ClusterGroupUpgradeReconciler) updateClusterProgress(
 		*index = new(int)
 		**index = 0
 		*clusterProgressState = ranv1alpha1.InProgress
+
+		r.sendEventCGUClusterUpgradeStarted(clusterGroupUpgrade, clusterName)
 	} else if *clusterProgressState == ranv1alpha1.Completed {
 		return true, false, false, nil
 	}

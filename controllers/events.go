@@ -10,6 +10,36 @@ import (
 
 type CGUEventReasonType string
 
+// CGU Event Reasons
+const (
+	CGUEventReasonCreated CGUEventReasonType = "CguCreated"
+	CGUEventReasonSuccess CGUEventReasonType = "CguSuccess"
+	CGUEventReasonTimeout CGUEventReasonType = "CguTimeout"
+
+	CGUEventReasonValidationFailure CGUEventReasonType = "CguValidationFailure"
+
+	CGUEventReasonUpgradeStarted  CGUEventReasonType = "CguUpgradeStarted"
+	CGUEventReasonUpgradeSuccess  CGUEventReasonType = "CguUpgradeSuccess"
+	CGUEventReasonUpgradeTimedout CGUEventReasonType = "CguUpgradeTimeout"
+)
+
+// CGU Event Messages
+const (
+	CGUEventMsgFmtCreated           = "New ClusterGroupUpgrade found: %s"
+	CGUEventMsgFmtUpgradeSuccess    = "ClusterGroupUpgrade %s succeeded remediating policies"
+	CGUEventMsgFmtUpgradeTimeout    = "ClusterGroupUpgrade %s timed-out remediating policies"
+	CGUEventMsgFmtValidationFailure = "ClusterGroupUpgrade %s: validation failure (%s): %s"
+
+	CGUEventMsgFmtBatchUpgradeStarted  = "ClusterGroupUpgrade %s: batch index %d upgrade started"
+	CGUEventMsgFmtBatchUpgradeSuccess  = "ClusterGroupUpgrade %s: all clusters in the batch index %d are compliant with managed policies"
+	CGUEventMsgFmtBatchUpgradeTimedout = "ClusterGroupUpgrade %s: some clusters in the batch index %d timed out remediating policies"
+
+	CGUEventMsgFmtClusterUpgradeSuccess = "ClusterGroupUpgrade %s: cluster %s upgrade finished successfully"
+	CGUEventMsgFmtClusterUpgradeStarted = "ClusterGroupUpgrade %s: cluster %s upgrade started"
+	// CGUEventMsgFmtClusterUpgradeTimedout = "ClusterGroupUpgrade %s: cluster %s timed out remediating policies"
+)
+
+// CGU Validation Failure literals for the event's message.
 const (
 	CGUValidationFailureMissingClusters   = "missing clusters"
 	CGUValidationFailureMissingPolicies   = "missing policies"
@@ -17,28 +47,25 @@ const (
 	CGUValidationFailureAmbiguousPolicies = "ambiguous polcies"
 )
 
-// CGU Event Reasons
+// Event annotation keys
 const (
-	CGUEventReasonCreated               CGUEventReasonType = "CguCreated"
-	CGUEventReasonUpgradeSuccess        CGUEventReasonType = "CguUpgradeSuccess"
-	CGUEventReasonUpgradeTimeout        CGUEventReasonType = "cguUpgradeTimeout"
-	CGUEventReasonBatchUpgradeStarted   CGUEventReasonType = "CguBatchUpgradeStarted"
-	CGUEventReasonBatchUpgradeSuccess   CGUEventReasonType = "CguBatchUpgradeSuccess"
-	CGUEventReasonBatchUpgradeTimedout  CGUEventReasonType = "CguBatchUpgradeTimeout"
-	CGUEventReasonClusterUpgradeSuccess CGUEventReasonType = "CguClusterUpgradeSuccess"
-	CGUEventReasonValidationFailure     CGUEventReasonType = "CguValidationFailure"
+	CGUEventAnnotationKeyPrefix = "cgu.openshift.io"
+
+	CGUEventAnnotationKeyEvType            = CGUEventAnnotationKeyPrefix + "/event-type"
+	CGUEventAnnotationKeyBatchClustersList = CGUEventAnnotationKeyPrefix + "/batch-clusters"
+	CGUEventAnnotationKeyClusterName       = CGUEventAnnotationKeyPrefix + "/cluster"
+
+	// Validation failures
+	CGUEventAnnotationKeyMissingClustersList   = CGUEventAnnotationKeyPrefix + "/missing-clusters"
+	CGUEventAnnotationKeyMissingPoliciesList   = CGUEventAnnotationKeyPrefix + "/missing-policies"
+	CGUEventAnnotationKeyInvalidPoliciesList   = CGUEventAnnotationKeyPrefix + "/invalid-policies"
+	CGUEventAnnotationKeyAmbiguousPoliciesList = CGUEventAnnotationKeyPrefix + "/ambiguous-policies"
 )
 
-// CGU Event Messages
+// Values for the CGUEventAnnotationKeyEvType key
 const (
-	CGUEventMsgFmtCreated               = "New ClusterGroupUpgrade found: %s"
-	CGUEventMsgFmtUpgradeSuccess        = "ClusterGroupUpgrade %s succeeded remediating policies"
-	CGUEventMsgFmtUpgradeTimeout        = "ClusterGroupUpgrade %s timed-out remediating policies"
-	CGUEventMsgFmtBatchUpgradeStarted   = "ClusterGroupUpgrade %s: batch index %d upgrade started"
-	CGUEventMsgFmtBatchUpgradeSuccess   = "ClusterGroupUpgrade %s: all clusters in the batch index %d are compliant with managed policies"
-	CGUEventMsgFmtBatchUpgradeTimedout  = "ClusterGroupUpgrade %s: some clusters in the batch index %d timed-out remediating policies"
-	CGUEventMsgFmtClusterUpgradeSuccess = "ClusterGroupUpgrade %s: cluster %s upgrade finished successfully"
-	CGUEventMsgFmtValidationFailure     = "ClusterGroupUpgrade %s: validation failure (%s): %s"
+	CGUAnnEventBatchUpgrade   = "batch"
+	CGUAnnEventClusterUpgrade = "cluster"
 )
 
 // CGU Validation errors
@@ -60,12 +87,12 @@ func (r *ClusterGroupUpgradeReconciler) sendEventCGUCreated(cgu *cguv1alpha1.Clu
 
 func (r *ClusterGroupUpgradeReconciler) sendEventCGUSuccess(cgu *cguv1alpha1.ClusterGroupUpgrade) {
 	evMsg := fmt.Sprintf(CGUEventMsgFmtUpgradeSuccess, cgu.Name)
-	r.Recorder.Event(cgu, corev1.EventTypeNormal, string(CGUEventReasonUpgradeSuccess), evMsg)
+	r.Recorder.Event(cgu, corev1.EventTypeNormal, string(CGUEventReasonSuccess), evMsg)
 }
 
 func (r *ClusterGroupUpgradeReconciler) sendEventCGUTimedout(cgu *cguv1alpha1.ClusterGroupUpgrade) {
 	evMsg := fmt.Sprintf(CGUEventMsgFmtUpgradeTimeout, cgu.Name)
-	r.Recorder.Event(cgu, corev1.EventTypeWarning, string(CGUEventReasonUpgradeTimeout), evMsg)
+	r.Recorder.Event(cgu, corev1.EventTypeWarning, string(CGUEventReasonTimeout), evMsg)
 }
 
 func (r *ClusterGroupUpgradeReconciler) sendEventCGUBatchUpgradeStarted(cgu *cguv1alpha1.ClusterGroupUpgrade) {
@@ -76,9 +103,14 @@ func (r *ClusterGroupUpgradeReconciler) sendEventCGUBatchUpgradeStarted(cgu *cgu
 
 	evMsg := fmt.Sprintf(CGUEventMsgFmtBatchUpgradeStarted, cgu.Name, cgu.Status.Status.CurrentBatch)
 
-	r.Recorder.AnnotatedEventf(cgu, map[string]string{"cgu.openshift.io/batch-clusters": strings.Join(batchClusters, ",")},
+	r.Recorder.AnnotatedEventf(cgu,
+		map[string]string{
+			CGUEventAnnotationKeyEvType:            CGUAnnEventBatchUpgrade,
+			CGUEventAnnotationKeyBatchClustersList: strings.Join(batchClusters, ","),
+		},
+
 		corev1.EventTypeNormal,
-		string(CGUEventReasonBatchUpgradeStarted), evMsg)
+		string(CGUEventReasonUpgradeStarted), evMsg)
 }
 
 func (r *ClusterGroupUpgradeReconciler) sendEventCGUBatchUpgradeSuccess(cgu *cguv1alpha1.ClusterGroupUpgrade) {
@@ -89,9 +121,13 @@ func (r *ClusterGroupUpgradeReconciler) sendEventCGUBatchUpgradeSuccess(cgu *cgu
 
 	evMsg := fmt.Sprintf(CGUEventMsgFmtBatchUpgradeSuccess, cgu.Name, cgu.Status.Status.CurrentBatch)
 
-	r.Recorder.AnnotatedEventf(cgu, map[string]string{"cgu.openshift.io/batch-clusters": strings.Join(batchClusters, ",")},
+	r.Recorder.AnnotatedEventf(cgu,
+		map[string]string{
+			CGUEventAnnotationKeyEvType:            CGUAnnEventBatchUpgrade,
+			CGUEventAnnotationKeyBatchClustersList: strings.Join(batchClusters, ","),
+		},
 		corev1.EventTypeNormal,
-		string(CGUEventReasonBatchUpgradeSuccess), evMsg)
+		string(CGUEventReasonUpgradeSuccess), evMsg)
 }
 
 func (r *ClusterGroupUpgradeReconciler) sendEventCGUBatchUpgradeTimedout(cgu *cguv1alpha1.ClusterGroupUpgrade) {
@@ -102,24 +138,59 @@ func (r *ClusterGroupUpgradeReconciler) sendEventCGUBatchUpgradeTimedout(cgu *cg
 
 	evMsg := fmt.Sprintf(CGUEventMsgFmtBatchUpgradeTimedout, cgu.Name, cgu.Status.Status.CurrentBatch)
 
-	r.Recorder.AnnotatedEventf(cgu, map[string]string{"cgu.openshift.io/batch-clusters": strings.Join(batchClusters, ",")},
+	r.Recorder.AnnotatedEventf(cgu,
+		map[string]string{
+			CGUEventAnnotationKeyEvType:            CGUAnnEventBatchUpgrade,
+			CGUEventAnnotationKeyBatchClustersList: strings.Join(batchClusters, ","),
+		},
 		corev1.EventTypeWarning,
-		string(CGUEventReasonBatchUpgradeTimedout), evMsg)
+		string(CGUEventReasonUpgradeTimedout), evMsg)
+}
+
+func (r *ClusterGroupUpgradeReconciler) sendEventCGUClusterUpgradeStarted(cgu *cguv1alpha1.ClusterGroupUpgrade, clusterName string) {
+	evMsg := fmt.Sprintf(CGUEventMsgFmtClusterUpgradeStarted, cgu.Name, clusterName)
+
+	r.Recorder.AnnotatedEventf(cgu,
+		map[string]string{
+			CGUEventAnnotationKeyEvType:      CGUAnnEventClusterUpgrade,
+			CGUEventAnnotationKeyClusterName: clusterName,
+		},
+		corev1.EventTypeNormal,
+		string(CGUEventReasonUpgradeStarted), evMsg)
 }
 
 func (r *ClusterGroupUpgradeReconciler) sendEventCGUClusterUpgradeSuccess(cgu *cguv1alpha1.ClusterGroupUpgrade, clusterName string) {
 	evMsg := fmt.Sprintf(CGUEventMsgFmtClusterUpgradeSuccess, cgu.Name, clusterName)
 
-	r.Recorder.AnnotatedEventf(cgu, map[string]string{"cgu.openshift.io/cluster": clusterName},
+	r.Recorder.AnnotatedEventf(cgu,
+		map[string]string{
+			CGUEventAnnotationKeyEvType:      CGUAnnEventClusterUpgrade,
+			CGUEventAnnotationKeyClusterName: clusterName,
+		},
 		corev1.EventTypeNormal,
-		string(CGUEventReasonClusterUpgradeSuccess), evMsg)
+		string(CGUEventReasonUpgradeSuccess), evMsg)
 }
 
-func (r *ClusterGroupUpgradeReconciler) sendEventCGUValidationFailureMissingCluster(cgu *cguv1alpha1.ClusterGroupUpgrade, clusterNames []string) {
+// func (r *ClusterGroupUpgradeReconciler) sendEventCGUClusterUpgradeTimedout(cgu *cguv1alpha1.ClusterGroupUpgrade, clusterName string) {
+// 	evMsg := fmt.Sprintf(CGUEventMsgFmtClusterUpgradeTimedout, cgu.Name, clusterName)
+
+// 	r.Recorder.AnnotatedEventf(cgu,
+// 		map[string]string{
+// 			CGUEventAnnotationKeyEvType:      CGUAnnEventClusterUpgrade,
+// 			CGUEventAnnotationKeyClusterName: clusterName,
+// 		},
+// 		corev1.EventTypeNormal,
+// 		string(CGUEventReasonUpgradeTimedout), evMsg)
+// }
+
+func (r *ClusterGroupUpgradeReconciler) sendEventCGUValidationFailureMissingClusters(cgu *cguv1alpha1.ClusterGroupUpgrade, clusterNames []string) {
 	clusterNamesStr := strings.Join(clusterNames, ",")
 	evMsg := fmt.Sprintf(CGUEventMsgFmtValidationFailure, cgu.Name, CGUValidationErrorMsgMissingCluster, clusterNamesStr)
 
-	r.Recorder.AnnotatedEventf(cgu, map[string]string{"cgu.openshift.io/cluster": clusterNamesStr},
+	r.Recorder.AnnotatedEventf(cgu,
+		map[string]string{
+			CGUEventAnnotationKeyMissingClustersList: clusterNamesStr,
+		},
 		corev1.EventTypeNormal,
 		string(CGUEventReasonValidationFailure), evMsg)
 }
@@ -137,11 +208,11 @@ func (r *ClusterGroupUpgradeReconciler) sendEventCGUVPoliciesValidationFailure(c
 	case CGUValidationErrorMsgMissingPolicies:
 		missingPoliciesStr := strings.Join(info.missingPolicies, ",")
 		evMsg = fmt.Sprintf(CGUEventMsgFmtValidationFailure, cgu.Name, failureType, missingPoliciesStr)
-		anns["cgu.openshift.io/missing-policies"] = missingPoliciesStr
+		anns[CGUEventAnnotationKeyMissingPoliciesList] = missingPoliciesStr
 	case CGUValidationErrorMsgInvalidPolicies:
 		invalidPoliciesStr := strings.Join(info.invalidPolicies, ",")
 		evMsg = fmt.Sprintf(CGUEventMsgFmtValidationFailure, cgu.Name, failureType, invalidPoliciesStr)
-		anns["cgu.openshift.io/invalid-policies"] = invalidPoliciesStr
+		anns[CGUEventAnnotationKeyInvalidPoliciesList] = invalidPoliciesStr
 	case CGUValidationFailureAmbiguousPolicies:
 		ambiguousPolicies := []string{}
 		for policy := range info.duplicatedPoliciesNs {
@@ -151,7 +222,7 @@ func (r *ClusterGroupUpgradeReconciler) sendEventCGUVPoliciesValidationFailure(c
 		ambiguousPoliciesStr := strings.Join(ambiguousPolicies, ",")
 
 		evMsg = fmt.Sprintf(CGUEventMsgFmtValidationFailure, cgu.Name, failureType, ambiguousPoliciesStr)
-		anns["cgu.openshift.io/ambiguous-policies"] = ambiguousPoliciesStr
+		anns[CGUEventAnnotationKeyAmbiguousPoliciesList] = ambiguousPoliciesStr
 	}
 
 	r.Recorder.AnnotatedEventf(cgu, anns, corev1.EventTypeWarning, string(CGUEventReasonValidationFailure), evMsg)
