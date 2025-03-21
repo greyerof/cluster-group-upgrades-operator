@@ -592,6 +592,9 @@ func (r *ClusterGroupUpgradeReconciler) Reconcile(ctx context.Context, req ctrl.
 				utils.TimeoutMessages[clusterGroupUpgrade.RolloutType()],
 			)
 			err = r.handleBatchTimeout(ctx, clusterGroupUpgrade)
+
+			r.sendEventCGUBatchUpgradeTimedout(clusterGroupUpgrade)
+
 			nextReconcile = requeueImmediately()
 		} else if clusterGroupUpgrade.Status.Status.CurrentBatch < len(clusterGroupUpgrade.Status.RemediationPlan) {
 			// Check if current policies have become compliant and if new policies have to be applied.
@@ -638,8 +641,6 @@ func (r *ClusterGroupUpgradeReconciler) Reconcile(ctx context.Context, req ctrl.
 					r.Log.Info("[Reconcile] Calculating batch timeout (minutes)", "currentBatchTimeout", fmt.Sprintf("%f", currentBatchTimeout.Minutes()))
 
 					if time.Since(clusterGroupUpgrade.Status.Status.CurrentBatchStartedAt.Time) > currentBatchTimeout {
-						r.sendEventCGUBatchUpgradeTimedout(clusterGroupUpgrade)
-
 						// We want to immediately continue to the next reconcile regardless of the timeout action
 						nextReconcile = requeueImmediately()
 
@@ -667,6 +668,9 @@ func (r *ClusterGroupUpgradeReconciler) Reconcile(ctx context.Context, req ctrl.
 							if err != nil {
 								return
 							}
+
+							r.sendEventCGUBatchUpgradeTimedout(clusterGroupUpgrade)
+
 							switch clusterGroupUpgrade.Spec.BatchTimeoutAction {
 							case ranv1alpha1.BatchTimeoutAction.Abort:
 								// If the value was abort then we need to fail out
