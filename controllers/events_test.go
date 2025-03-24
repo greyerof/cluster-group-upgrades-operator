@@ -65,12 +65,12 @@ func Test_truncateAnnotations(t *testing.T) {
 			args: args{
 				anns: map[string]string{
 					"k": "v",
-					CGUEventAnnotationsKeyTimedoutClustersList: "cluster1,cluster2",
+					CGUEventAnnotationKeyTimedoutClustersList: "cluster1,cluster2",
 				},
-				maxSize: len(CGUEventAnnotationsKeyTimedoutClustersList) + 10,
+				maxSize: len(CGUEventAnnotationKeyTimedoutClustersList) + 10,
 				truncatedAnns: map[string]string{
 					"k": "v",
-					CGUEventAnnotationsKeyTimedoutClustersList: "cluster1",
+					CGUEventAnnotationKeyTimedoutClustersList: "cluster1",
 				},
 			},
 		},
@@ -108,12 +108,12 @@ func Test_truncateAnnotations(t *testing.T) {
 			args: args{
 				anns: map[string]string{
 					"k": "v",
-					CGUEventAnnotationsKeyTimedoutClustersList: "cluster1,cluster2",
+					CGUEventAnnotationKeyTimedoutClustersList: "cluster1,cluster2",
 				},
-				maxSize: len(CGUEventAnnotationsKeyTimedoutClustersList) + 100,
+				maxSize: len(CGUEventAnnotationKeyTimedoutClustersList) + 100,
 				truncatedAnns: map[string]string{
 					"k": "v",
-					CGUEventAnnotationsKeyTimedoutClustersList: "cluster1,cluster2",
+					CGUEventAnnotationKeyTimedoutClustersList: "cluster1,cluster2",
 				},
 			},
 		},

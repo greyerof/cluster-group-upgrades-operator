@@ -393,6 +393,8 @@ func (r *ClusterGroupUpgradeReconciler) Reconcile(ctx context.Context, req ctrl.
 			return
 		}
 
+		r.sendEventCGUStarted(clusterGroupUpgrade)
+
 		if clusterGroupUpgrade.Status.Status.StartedAt.IsZero() {
 			clusterGroupUpgrade.Status.Status.StartedAt = metav1.Now()
 		}

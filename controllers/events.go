@@ -23,6 +23,7 @@ const (
 // CGU Event Messages
 const (
 	CGUEventMsgFmtCreated           = "New ClusterGroupUpgrade found: %s"
+	CGUEventMsgFmtStarted           = "ClusterGroupUpgrade %s started remediating policies"
 	CGUEventMsgFmtUpgradeSuccess    = "ClusterGroupUpgrade %s succeeded remediating policies"
 	CGUEventMsgFmtUpgradeTimeout    = "ClusterGroupUpgrade %s timed-out remediating policies"
 	CGUEventMsgFmtValidationFailure = "ClusterGroupUpgrade %s: validation failure (%s): %s"
@@ -48,13 +49,14 @@ const (
 const (
 	CGUEventAnnotationKeyPrefix = "cgu.openshift.io"
 
-	CGUEventAnnotationKeyEvType                 = CGUEventAnnotationKeyPrefix + "/event-type"
-	CGUEventAnnotationKeyBatchClustersList      = CGUEventAnnotationKeyPrefix + "/batch-clusters"
-	CGUEventAnnotationKeyBatchClustersCount     = CGUEventAnnotationKeyPrefix + "/batch-clusters-count"
-	CGUEventAnnotationKeyClusterName            = CGUEventAnnotationKeyPrefix + "/cluster-name"
-	CGUEventAnnotationsKeyTimedoutClustersList  = CGUEventAnnotationKeyPrefix + "/timedout-clusters"
-	CGUEventAnnotationsKeyTimedoutClustersCount = CGUEventAnnotationKeyPrefix + "/timedout-clusters-count"
-	CGUEventAnnotationsKeyTotalClustersCount    = CGUEventAnnotationKeyPrefix + "/total-clusters-count"
+	CGUEventAnnotationKeyEvType                = CGUEventAnnotationKeyPrefix + "/event-type"
+	CGUEventAnnotationKeyBatchClustersList     = CGUEventAnnotationKeyPrefix + "/batch-clusters"
+	CGUEventAnnotationKeyBatchClustersCount    = CGUEventAnnotationKeyPrefix + "/batch-clusters-count"
+	CGUEventAnnotationKeyClusterName           = CGUEventAnnotationKeyPrefix + "/cluster-name"
+	CGUEventAnnotationKeyTimedoutClustersList  = CGUEventAnnotationKeyPrefix + "/timedout-clusters"
+	CGUEventAnnotationKeyTimedoutClustersCount = CGUEventAnnotationKeyPrefix + "/timedout-clusters-count"
+	CGUEventAnnotationKeyTotalBatchesCount     = CGUEventAnnotationKeyPrefix + "/total-batches-count"
+	CGUEventAnnotationKeyTotalClustersCount    = CGUEventAnnotationKeyPrefix + "/total-clusters-count"
 
 	// Validation failures
 	CGUEventAnnotationKeyMissingClustersList   = CGUEventAnnotationKeyPrefix + "/missing-clusters"
@@ -89,12 +91,47 @@ const (
 
 func (r *ClusterGroupUpgradeReconciler) sendEventCGUCreated(cgu *cguv1alpha1.ClusterGroupUpgrade) {
 	evMsg := fmt.Sprintf(CGUEventMsgFmtCreated, cgu.Name)
-	r.Recorder.Event(cgu, corev1.EventTypeNormal, CGUEventReasonCreated, evMsg)
+
+	evAnns := map[string]string{
+		CGUEventAnnotationKeyEvType: CGUAnnEventGlobalUpgrade,
+	}
+
+	r.Recorder.AnnotatedEventf(cgu,
+		evAnns,
+		corev1.EventTypeNormal,
+		CGUEventReasonCreated, evMsg)
+}
+
+func (r *ClusterGroupUpgradeReconciler) sendEventCGUStarted(cgu *cguv1alpha1.ClusterGroupUpgrade) {
+	evMsg := fmt.Sprintf(CGUEventMsgFmtStarted, cgu.Name)
+
+	clustersCount := getTotalClustersNum(cgu)
+	batchesCount := len(cgu.Status.RemediationPlan)
+
+	evAnns := map[string]string{
+		CGUEventAnnotationKeyEvType:             CGUAnnEventGlobalUpgrade,
+		CGUEventAnnotationKeyTotalClustersCount: fmt.Sprint(clustersCount),
+		CGUEventAnnotationKeyTotalBatchesCount:  fmt.Sprint(batchesCount),
+	}
+
+	r.Recorder.AnnotatedEventf(cgu,
+		evAnns,
+		corev1.EventTypeNormal,
+		CGUEventReasonStarted, evMsg)
 }
 
 func (r *ClusterGroupUpgradeReconciler) sendEventCGUSuccess(cgu *cguv1alpha1.ClusterGroupUpgrade) {
 	evMsg := fmt.Sprintf(CGUEventMsgFmtUpgradeSuccess, cgu.Name)
-	r.Recorder.Event(cgu, corev1.EventTypeNormal, CGUEventReasonSuccess, evMsg)
+
+	evAnns := map[string]string{
+		CGUEventAnnotationKeyEvType:             CGUAnnEventGlobalUpgrade,
+		CGUEventAnnotationKeyTotalClustersCount: fmt.Sprint(getTotalClustersNum(cgu)),
+	}
+
+	r.Recorder.AnnotatedEventf(cgu,
+		evAnns,
+		corev1.EventTypeNormal,
+		CGUEventReasonSuccess, evMsg)
 }
 
 func (r *ClusterGroupUpgradeReconciler) sendEventCGUTimedout(cgu *cguv1alpha1.ClusterGroupUpgrade) {
@@ -109,9 +146,9 @@ func (r *ClusterGroupUpgradeReconciler) sendEventCGUTimedout(cgu *cguv1alpha1.Cl
 	}
 
 	evAnns := map[string]string{
-		CGUEventAnnotationKeyEvType:                 CGUAnnEventGlobalUpgrade,
-		CGUEventAnnotationsKeyTimedoutClustersCount: fmt.Sprint(len(timedoutClusters)),
-		CGUEventAnnotationsKeyTimedoutClustersList:  strings.Join(timedoutClusters, ","),
+		CGUEventAnnotationKeyEvType:                CGUAnnEventGlobalUpgrade,
+		CGUEventAnnotationKeyTimedoutClustersCount: fmt.Sprint(len(timedoutClusters)),
+		CGUEventAnnotationKeyTimedoutClustersList:  strings.Join(timedoutClusters, ","),
 	}
 
 	truncateAnnotations(evAnns, maxEventAnnsSize)
@@ -131,10 +168,10 @@ func (r *ClusterGroupUpgradeReconciler) sendEventCGUBatchUpgradeStarted(cgu *cgu
 	evMsg := fmt.Sprintf(CGUEventMsgFmtBatchUpgradeStarted, cgu.Name, cgu.Status.Status.CurrentBatch)
 
 	evAnns := map[string]string{
-		CGUEventAnnotationKeyEvType:              CGUAnnEventBatchUpgrade,
-		CGUEventAnnotationKeyBatchClustersCount:  fmt.Sprint(len(batchClusters)),
-		CGUEventAnnotationsKeyTotalClustersCount: fmt.Sprint(getTotalClustersNum(cgu)),
-		CGUEventAnnotationKeyBatchClustersList:   strings.Join(batchClusters, ","),
+		CGUEventAnnotationKeyEvType:             CGUAnnEventBatchUpgrade,
+		CGUEventAnnotationKeyBatchClustersCount: fmt.Sprint(len(batchClusters)),
+		CGUEventAnnotationKeyTotalClustersCount: fmt.Sprint(getTotalClustersNum(cgu)),
+		CGUEventAnnotationKeyBatchClustersList:  strings.Join(batchClusters, ","),
 	}
 
 	truncateAnnotations(evAnns, maxEventAnnsSize)
@@ -146,18 +183,21 @@ func (r *ClusterGroupUpgradeReconciler) sendEventCGUBatchUpgradeStarted(cgu *cgu
 }
 
 func (r *ClusterGroupUpgradeReconciler) sendEventCGUBatchUpgradeSuccess(cgu *cguv1alpha1.ClusterGroupUpgrade) {
+	evMsg := fmt.Sprintf(CGUEventMsgFmtBatchUpgradeSuccess, cgu.Name, cgu.Status.Status.CurrentBatch)
+
 	batchClusters := []string{}
 	for clusterName := range cgu.Status.Status.CurrentBatchRemediationProgress {
 		batchClusters = append(batchClusters, clusterName)
 	}
 
-	evMsg := fmt.Sprintf(CGUEventMsgFmtBatchUpgradeSuccess, cgu.Name, cgu.Status.Status.CurrentBatch)
+	batchClustersCount := len(batchClusters)
+	totalClustersCount := getTotalClustersNum(cgu)
 
 	evAnns := map[string]string{
-		CGUEventAnnotationKeyEvType:              CGUAnnEventBatchUpgrade,
-		CGUEventAnnotationKeyBatchClustersCount:  fmt.Sprint(len(batchClusters)),
-		CGUEventAnnotationsKeyTotalClustersCount: fmt.Sprint(getTotalClustersNum(cgu)),
-		CGUEventAnnotationKeyBatchClustersList:   strings.Join(batchClusters, ","),
+		CGUEventAnnotationKeyEvType:             CGUAnnEventBatchUpgrade,
+		CGUEventAnnotationKeyBatchClustersCount: fmt.Sprint(batchClustersCount),
+		CGUEventAnnotationKeyTotalClustersCount: fmt.Sprint(totalClustersCount),
+		CGUEventAnnotationKeyBatchClustersList:  strings.Join(batchClusters, ","),
 	}
 
 	truncateAnnotations(evAnns, maxEventAnnsSize)
@@ -179,10 +219,12 @@ func (r *ClusterGroupUpgradeReconciler) sendEventCGUBatchUpgradeTimedout(cgu *cg
 		}
 	}
 
+	timedoutClustersCount := len(timedoutClusters)
+
 	evAnns := map[string]string{
-		CGUEventAnnotationKeyEvType:                 CGUAnnEventBatchUpgrade,
-		CGUEventAnnotationsKeyTimedoutClustersCount: fmt.Sprint(len(timedoutClusters)),
-		CGUEventAnnotationsKeyTimedoutClustersList:  strings.Join(timedoutClusters, ","),
+		CGUEventAnnotationKeyEvType:                CGUAnnEventBatchUpgrade,
+		CGUEventAnnotationKeyTimedoutClustersCount: fmt.Sprint(timedoutClustersCount),
+		CGUEventAnnotationKeyTimedoutClustersList:  strings.Join(timedoutClusters, ","),
 	}
 
 	truncateAnnotations(evAnns, maxEventAnnsSize)
@@ -301,9 +343,9 @@ func (r *ClusterGroupUpgradeReconciler) sendEventCGUVPoliciesValidationFailure(c
 // No truncation is made if maxSize is 0.
 func truncateAnnotations(anns map[string]string, maxSize int) {
 	canBeTruncatedAnnKeys := map[string]bool{
-		CGUEventAnnotationKeyBatchClustersList:     true,
-		CGUEventAnnotationsKeyTimedoutClustersList: true,
-		CGUEventAnnotationKeyMissingClustersList:   true,
+		CGUEventAnnotationKeyBatchClustersList:    true,
+		CGUEventAnnotationKeyTimedoutClustersList: true,
+		CGUEventAnnotationKeyMissingClustersList:  true,
 	}
 
 	var totalAnnsSize int64
