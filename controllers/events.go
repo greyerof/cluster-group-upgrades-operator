@@ -1,6 +1,7 @@
 package controllers
 
 import (
+	"context"
 	"fmt"
 	"strings"
 
@@ -89,6 +90,16 @@ const (
 	CGUValidationErrorMsgInvalidPolicies   PoliciesValidationFailureType = "invalid policies"
 )
 
+// emitEvent is a helper that calls the Emitter and logs failures.
+// Events are best-effort; errors are logged but never propagated to the caller.
+func (r *ClusterGroupUpgradeReconciler) emitEvent(cgu *cguv1alpha1.ClusterGroupUpgrade,
+	annotations map[string]string, eventType, reason, note string) {
+
+	if err := r.Emitter.Emit(context.TODO(), cgu, annotations, eventType, reason, "Reconcile", note); err != nil {
+		r.Log.Error(err, "failed to emit event", "reason", reason, "cgu", cgu.Namespace+"/"+cgu.Name)
+	}
+}
+
 func (r *ClusterGroupUpgradeReconciler) sendEventCGUCreated(cgu *cguv1alpha1.ClusterGroupUpgrade) {
 	evMsg := fmt.Sprintf(CGUEventMsgFmtCreated, cgu.Name)
 
@@ -96,10 +107,7 @@ func (r *ClusterGroupUpgradeReconciler) sendEventCGUCreated(cgu *cguv1alpha1.Clu
 		CGUEventAnnotationKeyEvType: CGUAnnEventGlobalUpgrade,
 	}
 
-	r.Recorder.AnnotatedEventf(cgu,
-		evAnns,
-		corev1.EventTypeNormal,
-		CGUEventReasonCreated, evMsg)
+	r.emitEvent(cgu, evAnns, corev1.EventTypeNormal, CGUEventReasonCreated, evMsg)
 }
 
 func (r *ClusterGroupUpgradeReconciler) sendEventCGUStarted(cgu *cguv1alpha1.ClusterGroupUpgrade) {
@@ -114,10 +122,7 @@ func (r *ClusterGroupUpgradeReconciler) sendEventCGUStarted(cgu *cguv1alpha1.Clu
 		CGUEventAnnotationKeyTotalBatchesCount:  fmt.Sprint(batchesCount),
 	}
 
-	r.Recorder.AnnotatedEventf(cgu,
-		evAnns,
-		corev1.EventTypeNormal,
-		CGUEventReasonStarted, evMsg)
+	r.emitEvent(cgu, evAnns, corev1.EventTypeNormal, CGUEventReasonStarted, evMsg)
 }
 
 func (r *ClusterGroupUpgradeReconciler) sendEventCGUSuccess(cgu *cguv1alpha1.ClusterGroupUpgrade) {
@@ -128,16 +133,12 @@ func (r *ClusterGroupUpgradeReconciler) sendEventCGUSuccess(cgu *cguv1alpha1.Clu
 		CGUEventAnnotationKeyTotalClustersCount: fmt.Sprint(getTotalClustersNum(cgu)),
 	}
 
-	r.Recorder.AnnotatedEventf(cgu,
-		evAnns,
-		corev1.EventTypeNormal,
-		CGUEventReasonSuccess, evMsg)
+	r.emitEvent(cgu, evAnns, corev1.EventTypeNormal, CGUEventReasonSuccess, evMsg)
 }
 
 func (r *ClusterGroupUpgradeReconciler) sendEventCGUTimedout(cgu *cguv1alpha1.ClusterGroupUpgrade) {
 	evMsg := fmt.Sprintf(CGUEventMsgFmtUpgradeTimedout, cgu.Name)
 
-	// Iterate through all clusters to get a list of the timed-out ones.
 	timedoutClusters := []string{}
 	for _, clusterState := range cgu.Status.Clusters {
 		if clusterState.State == utils.ClusterRemediationTimedout {
@@ -154,10 +155,7 @@ func (r *ClusterGroupUpgradeReconciler) sendEventCGUTimedout(cgu *cguv1alpha1.Cl
 
 	truncateAnnotations(evAnns, maxEventAnnsSize)
 
-	r.Recorder.AnnotatedEventf(cgu,
-		evAnns,
-		corev1.EventTypeWarning,
-		CGUEventReasonTimedout, evMsg)
+	r.emitEvent(cgu, evAnns, corev1.EventTypeWarning, CGUEventReasonTimedout, evMsg)
 }
 
 func (r *ClusterGroupUpgradeReconciler) sendEventCGUBatchUpgradeStarted(cgu *cguv1alpha1.ClusterGroupUpgrade) {
@@ -177,10 +175,7 @@ func (r *ClusterGroupUpgradeReconciler) sendEventCGUBatchUpgradeStarted(cgu *cgu
 
 	truncateAnnotations(evAnns, maxEventAnnsSize)
 
-	r.Recorder.AnnotatedEventf(cgu,
-		evAnns,
-		corev1.EventTypeNormal,
-		CGUEventReasonStarted, evMsg)
+	r.emitEvent(cgu, evAnns, corev1.EventTypeNormal, CGUEventReasonStarted, evMsg)
 }
 
 func (r *ClusterGroupUpgradeReconciler) sendEventCGUBatchUpgradeSuccess(cgu *cguv1alpha1.ClusterGroupUpgrade) {
@@ -203,16 +198,12 @@ func (r *ClusterGroupUpgradeReconciler) sendEventCGUBatchUpgradeSuccess(cgu *cgu
 
 	truncateAnnotations(evAnns, maxEventAnnsSize)
 
-	r.Recorder.AnnotatedEventf(cgu,
-		evAnns,
-		corev1.EventTypeNormal,
-		CGUEventReasonSuccess, evMsg)
+	r.emitEvent(cgu, evAnns, corev1.EventTypeNormal, CGUEventReasonSuccess, evMsg)
 }
 
 func (r *ClusterGroupUpgradeReconciler) sendEventCGUBatchUpgradeTimedout(cgu *cguv1alpha1.ClusterGroupUpgrade) {
 	evMsg := fmt.Sprintf(CGUEventMsgFmtBatchUpgradeTimedout, cgu.Name, cgu.Status.Status.CurrentBatch)
 
-	// Iterate through the batch clusters to get a list of the timed-out ones.
 	batchClustersCount := 0
 	timedoutClusters := []string{}
 	for clusterName, clusterProgress := range cgu.Status.Status.CurrentBatchRemediationProgress {
@@ -235,10 +226,7 @@ func (r *ClusterGroupUpgradeReconciler) sendEventCGUBatchUpgradeTimedout(cgu *cg
 
 	truncateAnnotations(evAnns, maxEventAnnsSize)
 
-	r.Recorder.AnnotatedEventf(cgu,
-		evAnns,
-		corev1.EventTypeWarning,
-		CGUEventReasonTimedout, evMsg)
+	r.emitEvent(cgu, evAnns, corev1.EventTypeWarning, CGUEventReasonTimedout, evMsg)
 }
 
 func (r *ClusterGroupUpgradeReconciler) sendEventCGUClusterUpgradeStarted(cgu *cguv1alpha1.ClusterGroupUpgrade, clusterName string) {
@@ -251,10 +239,7 @@ func (r *ClusterGroupUpgradeReconciler) sendEventCGUClusterUpgradeStarted(cgu *c
 
 	truncateAnnotations(evAnns, maxEventAnnsSize)
 
-	r.Recorder.AnnotatedEventf(cgu,
-		evAnns,
-		corev1.EventTypeNormal,
-		CGUEventReasonStarted, evMsg)
+	r.emitEvent(cgu, evAnns, corev1.EventTypeNormal, CGUEventReasonStarted, evMsg)
 }
 
 func (r *ClusterGroupUpgradeReconciler) sendEventCGUClusterUpgradeSuccess(cgu *cguv1alpha1.ClusterGroupUpgrade, clusterName string) {
@@ -267,10 +252,7 @@ func (r *ClusterGroupUpgradeReconciler) sendEventCGUClusterUpgradeSuccess(cgu *c
 
 	truncateAnnotations(evAnns, maxEventAnnsSize)
 
-	r.Recorder.AnnotatedEventf(cgu,
-		evAnns,
-		corev1.EventTypeNormal,
-		CGUEventReasonSuccess, evMsg)
+	r.emitEvent(cgu, evAnns, corev1.EventTypeNormal, CGUEventReasonSuccess, evMsg)
 }
 
 // func (r *ClusterGroupUpgradeReconciler) sendEventCGUClusterUpgradeTimedout(cgu *cguv1alpha1.ClusterGroupUpgrade, clusterName string) {
@@ -300,10 +282,7 @@ func (r *ClusterGroupUpgradeReconciler) sendEventCGUValidationFailureMissingClus
 
 	truncateAnnotations(evAnns, maxEventAnnsSize)
 
-	r.Recorder.AnnotatedEventf(cgu,
-		evAnns,
-		corev1.EventTypeNormal,
-		CGUEventReasonValidationFailure, evMsg)
+	r.emitEvent(cgu, evAnns, corev1.EventTypeNormal, CGUEventReasonValidationFailure, evMsg)
 }
 
 func (r *ClusterGroupUpgradeReconciler) sendEventCGUVPoliciesValidationFailure(cgu *cguv1alpha1.ClusterGroupUpgrade, failureType PoliciesValidationFailureType, info policiesInfo) {
@@ -338,13 +317,12 @@ func (r *ClusterGroupUpgradeReconciler) sendEventCGUVPoliciesValidationFailure(c
 
 	truncateAnnotations(anns, maxEventAnnsSize)
 
-	r.Recorder.AnnotatedEventf(cgu, anns, corev1.EventTypeWarning, CGUEventReasonValidationFailure, evMsg)
+	r.emitEvent(cgu, anns, corev1.EventTypeWarning, CGUEventReasonValidationFailure, evMsg)
 }
 
-// Truncates annotations with undeterministic size that can grow too much (batch clusters, timedout clusters...), ensuring
-// that there's always room for the most important annotations. As per k8s' code, total annotations size cannot exceed 64k.
-// See: https://github.com/kubernetes/kubernetes/blob/master/staging/src/k8s.io/apimachinery/pkg/api/validation/objectmeta.go#L36
-// and https://github.com/kubernetes/kubernetes/blob/master/staging/src/k8s.io/apimachinery/pkg/api/validation/objectmeta.go#L58
+// truncateAnnotations shrinks annotations whose values can grow unbounded
+// (batch clusters, timedout clusters, etc.) to stay within the Kubernetes
+// annotation size limit of 64 KiB.
 //
 // No truncation is made if maxSize is 0.
 // nolint: unparam
@@ -360,32 +338,26 @@ func truncateAnnotations(anns map[string]string, maxSize int) {
 		totalAnnsSize += int64(len(k)) + int64(len(v))
 	}
 
-	// Do not truncate if anns size doesn't exceed the limit
 	if totalAnnsSize <= int64(maxSize) {
 		return
 	}
 
 	sizeToShrink := totalAnnsSize - int64(maxSize)
 
-	// Search for annotations that can be truncated. Once we find one, remove elements from the last
-	// until validation func succeeds.
 	for k, v := range anns {
 		if !canBeTruncatedAnnKeys[k] {
 			continue
 		}
 
-		// Assumption: this is the annotation that grew too much, so let's shrink it so it fits.
 		maxListStrLen := int64(len(v)) - sizeToShrink
 		anns[k] = truncateListString(v, maxListStrLen)
 
-		// Design choice: clusters lists are the only anns that can be really big, but only one
-		// annotation of those types can appear now on each event, so we're done here.
+		// Only one truncatable annotation per event, so we're done.
 		break
 	}
 }
 
-// Truncates a list "elem1,elem2,..." leaving only the elements that fit in maxSize
-// including the separator.
+// truncateListString keeps only the comma-separated elements that fit in maxSize.
 func truncateListString(listStr string, maxSize int64) string {
 	newElems := []string{}
 
@@ -395,7 +367,6 @@ func truncateListString(listStr string, maxSize int64) string {
 
 		newElemsStr := strings.Join(newElems, ",")
 		if int64(len(newElemsStr)) > maxSize {
-			// The newly added element doesn't fit, remove it and return.
 			newElems = newElems[:len(newElems)-1]
 			return strings.Join(newElems, ",")
 		}

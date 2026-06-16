@@ -33,7 +33,6 @@ import (
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
-	"k8s.io/client-go/tools/record"
 	"k8s.io/client-go/util/retry"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/builder"
@@ -44,6 +43,9 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/handler"
 	"sigs.k8s.io/controller-runtime/pkg/predicate"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
+
+	"github.com/openshift-kni/cluster-group-upgrades-operator/controllers/emitter"
+	typedv1events "k8s.io/client-go/kubernetes/typed/events/v1"
 
 	utils "github.com/openshift-kni/cluster-group-upgrades-operator/controllers/utils"
 	ranv1alpha1 "github.com/openshift-kni/cluster-group-upgrades-operator/pkg/api/clustergroupupgrades/v1alpha1"
@@ -56,9 +58,9 @@ import (
 // ClusterGroupUpgradeReconciler reconciles a ClusterGroupUpgrade object
 type ClusterGroupUpgradeReconciler struct {
 	client.Client
-	Log      logr.Logger
-	Scheme   *runtime.Scheme
-	Recorder record.EventRecorder
+	Log         logr.Logger
+	Scheme      *runtime.Scheme
+	Emitter *emitter.Emitter
 }
 
 type policiesInfo struct {
@@ -1418,7 +1420,11 @@ func (r *ClusterGroupUpgradeReconciler) managedClusterResourceMapper(ctx context
 
 // SetupWithManager sets up the controller with the Manager.
 func (r *ClusterGroupUpgradeReconciler) SetupWithManager(mgr ctrl.Manager) error {
-	r.Recorder = mgr.GetEventRecorderFor("ClusterGroupUpgrade") //nolint: staticcheck
+	eventsClient, err := typedv1events.NewForConfigAndClient(mgr.GetConfig(), mgr.GetHTTPClient())
+	if err != nil {
+		return fmt.Errorf("creating events client: %w", err)
+	}
+	r.Emitter = emitter.New(eventsClient, mgr.GetScheme(), "ClusterGroupUpgrade")
 
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&ranv1alpha1.ClusterGroupUpgrade{}, builder.WithPredicates(predicate.Funcs{

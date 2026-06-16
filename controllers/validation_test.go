@@ -13,7 +13,7 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/util/yaml"
 	"k8s.io/client-go/kubernetes/scheme"
-	"k8s.io/client-go/tools/record"
+	"github.com/openshift-kni/cluster-group-upgrades-operator/controllers/emitter"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 )
@@ -200,7 +200,7 @@ func TestClusterGroupUpgradeReconciler_extractOpenshiftImagePlatformFromPolicies
 		Client   client.Client
 		Log      logr.Logger
 		Scheme   *runtime.Scheme
-		Recorder record.EventRecorder
+		Emitter *emitter.Emitter
 	}
 
 	commonFields := fields{
@@ -208,7 +208,7 @@ func TestClusterGroupUpgradeReconciler_extractOpenshiftImagePlatformFromPolicies
 		Client:   nil,
 		Log:      logr.Discard(),
 		Scheme:   nil,
-		Recorder: nil,
+		Emitter: nil,
 	}
 
 	type args struct {
@@ -274,7 +274,7 @@ func TestClusterGroupUpgradeReconciler_extractOpenshiftImagePlatformFromPolicies
 				Client:   tt.fields.Client,
 				Log:      tt.fields.Log,
 				Scheme:   tt.fields.Scheme,
-				Recorder: tt.fields.Recorder,
+				Emitter: tt.fields.Emitter,
 			}
 
 			// special case when there needs to be a http call
@@ -315,7 +315,7 @@ func TestClusterGroupUpgradeReconciler_validateOpenshiftUpgradeVersion(t *testin
 		Client   client.Client
 		Log      logr.Logger
 		Scheme   *runtime.Scheme
-		Recorder record.EventRecorder
+		Emitter *emitter.Emitter
 	}
 
 	commonFields := fields{
@@ -323,7 +323,7 @@ func TestClusterGroupUpgradeReconciler_validateOpenshiftUpgradeVersion(t *testin
 		Client:   nil,
 		Log:      logr.Discard(),
 		Scheme:   nil,
-		Recorder: nil,
+		Emitter: nil,
 	}
 
 	type args struct {
@@ -403,7 +403,7 @@ func TestClusterGroupUpgradeReconciler_validateOpenshiftUpgradeVersion(t *testin
 				Client:   tt.fields.Client,
 				Log:      tt.fields.Log,
 				Scheme:   tt.fields.Scheme,
-				Recorder: tt.fields.Recorder,
+				Emitter: tt.fields.Emitter,
 			}
 
 			// special case when there needs to be a http call
@@ -845,7 +845,7 @@ spec:
 		Client   client.Client
 		Log      logr.Logger
 		Scheme   *runtime.Scheme
-		Recorder record.EventRecorder
+		Emitter *emitter.Emitter
 	}
 
 	commonFields := fields{
@@ -853,7 +853,7 @@ spec:
 		Client:   nil,
 		Log:      logr.Discard(),
 		Scheme:   nil,
-		Recorder: nil,
+		Emitter: nil,
 	}
 
 	type args struct {
@@ -932,7 +932,7 @@ spec:
 				Client:   tt.fields.Client,
 				Log:      tt.fields.Log,
 				Scheme:   tt.fields.Scheme,
-				Recorder: tt.fields.Recorder,
+				Emitter: tt.fields.Emitter,
 			}
 
 			got, err := r.extractPrecachingSpecFromPolicies(tt.args.policies)
