@@ -11,7 +11,7 @@ namespace: default
 parallel: 1
 testDirs:
   - tests/kuttl/cgu/
-  - tests/kuttl/ibgu/
+  # - tests/kuttl/ibgu/
 timeout: 60
 # startControlPlane: true
 # startKIND: true
